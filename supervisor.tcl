@@ -38,8 +38,35 @@ proc pipe_stdio {args} {
   pipe rstderr wstderr
 }
 
-proc fork_child {setting} {
-  array set config $setting
+#--------------------------------------------------------#
+# e.g.:
+#   pformat "%(name)s-%(num)02d" {name hello num 3}
+#--------------------------------------------------------#
+proc pformat {fmt vars} {
+  set cmd [list format]
+  lappend cmd [regsub -all {%\(\w+\)} $fmt "%"]
+  foreach {- name} [regexp -inline -all {%\((\w+)\)} $fmt] {
+    lappend cmd [dict get $vars $name]
+  }
+  return [ {*}$cmd ]
+}
+
+proc fork_program {setting} {
+  set numprocs [dict get $setting numprocs]
+  for {set i 0} {$i < $numprocs} {incr i} {
+    puts [list fork_child $setting $i]
+    fork_child $setting $i
+  }
+}
+
+proc fork_child {setting {index 0}} {
+  set vars [dict create \
+    program [dict get $setting program] \
+    index   $index \
+  ]
+  # group, host, program, index, dir
+
+  array set config [pformat $setting $vars]
 
   set pid -1 ; catch {set pid [fork]}
   switch $pid {
@@ -112,6 +139,7 @@ proc load_ini {{file "supervisor.ini"}} {
   foreach section [ini::sections $ini] {
     if [string match "program:*" $section] {
       dict set ::lut $section [ini::get $ini $section]
+      dict set ::lut $section program [lindex [split $section :] 1]
     }
   }
   ini::close $ini
@@ -129,10 +157,18 @@ set program.default {
 
 load_ini
 
+set program_queue [list]
 foreach section [dict keys $lut program:*] {
   set program [dict merge ${program.default} [dict get $lut $section ]]
+  lappend program_queue [list $program [dict get $program priority]]
+}
+
+set program_queue [lsort -index 1 -integer -decr $program_queue]
+
+foreach program $program_queue {
+  lassign $program program priority
   puts "DEBUG: $program"
-  fork_child $program
+  fork_program $program
 }
 
 wait_child
