@@ -2,6 +2,8 @@
 
 package require Tcl 8.5
 package require Tclx
+package require tcllib
+package require inifile
 
 set lut [dict create]
 
@@ -105,7 +107,15 @@ proc wait_child {} {
   after 1000 wait_child
 }
 
-#======================================================
+proc load_ini {{file "supervisor.ini"}} {
+  set ini [ini::open $file]
+  foreach section [ini::sections $ini] {
+    if [string match "program:*" $section] {
+      dict set ::lut $section [ini::get $ini $section]
+    }
+  }
+  ini::close $ini
+}
 
 set program.default {
   priority 0
@@ -115,14 +125,15 @@ set program.default {
   stdio    ""
 }
 
-set program [dict create]
-dict set program command "tail -f /dev/null"
-dict set program name "demo-tail"
-#dict set program stdio "> /tmp/demo-tail.log 2> /tmp/demo-tail.err"
-dict set program stdio ">& /tmp/demo-tail.stdio"
+#======================================================
 
-set program [dict merge ${program.default} $program]
-fork_child $program
+load_ini
+
+foreach section [dict keys $lut program:*] {
+  set program [dict merge ${program.default} [dict get $lut $section ]]
+  puts "DEBUG: $program"
+  fork_child $program
+}
 
 wait_child
 
@@ -134,6 +145,6 @@ exit
 # TODO:                                                #
 #======================================================#
 
-  * load from a config file
-  * put process into process group
+  - load from a config file
+  + put process into process group
 
