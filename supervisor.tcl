@@ -15,9 +15,22 @@ proc redirect_stdio {args} {
   # TODO: not work { close stdout  ; open $file w }
   foreach {mode file} $args {
     switch -exact $mode {
-      "|"     { dup $wstdout stdout ; break }
-      "2|"    { dup $wstderr stderr ; break }
-      "|&"    { dup $wstdout stdout ; dup $wstderr stderr ; break }
+      "|"     {
+        dup $::pstdout stdout ;
+        close $::pstdout ; close $::istdout ;
+        break
+      }
+      "2|"    {
+        dup $::pstderr stderr ;
+        close $::pstderr ; close $::istderr ;
+        break
+      }
+      "|&"    {
+        dup $::pstdout stdout ; dup $::pstderr stderr ;
+        close $::pstdout ; close $::pstderr ;
+        close $::istdout ; close $::istderr ;
+        break
+      }
       ">"     { dup [open $file "w"] stdout }
       "2>"    { dup [open $file "w"] stderr }
       ">&"    { dup [open $file "w"] stdout ; dup stdout stderr }
@@ -32,11 +45,44 @@ proc redirect_stdio {args} {
   }
 }
 
-proc pipe_stdio {args} {
-  # TODO
-  pipe rstdout wstdout
-  pipe rstderr wstderr
+proc GetData {chan} {
+    set data [read $chan]
+    puts -nonewline "[string length $data] $data"
+    if {[eof $chan]} {
+        fileevent $chan readable {}
+    }
 }
+
+proc pipe_stdio {args} {
+  set ::pstdout "" ; set ::pstderr ""
+  set ::istdout "" ; set ::istderr ""
+
+  # TODO
+  set stdout "" ; set stderr ""
+  foreach {mode file} $args {
+    switch -exact $mode {
+      "|"     { set stdout $file }
+      "2|"    { set stderr $file }
+      "|&"    { set stdout $file ; set stderr stdout }
+      default {
+        # Error
+      }
+    }
+  }
+
+  if {$stdout ne ""} {
+    pipe ::istdout ::pstdout
+  }
+  if {$stderr eq "stdout"} {
+    dup $::pstdout ::pstderr
+    dup $::istdout ::istderr
+  } elseif {$stderr ne ""} {
+    pipe ::istderr ::pstderr
+  }
+  fconfigure $::istdout -blocking 0 ;# -encoding binary
+  fileevent  $::istdout readable [list GetData $::istdout]
+}
+
 
 #--------------------------------------------------------#
 # e.g.:
@@ -68,6 +114,7 @@ proc fork_child {setting {index 0}} {
 
   array set config [pformat $setting $vars]
 
+  pipe_stdio {*}$config(stdio)
   set pid -1 ; catch {set pid [fork]}
   switch $pid {
     -1 {
@@ -97,7 +144,10 @@ proc fork_child {setting {index 0}} {
     }
     default {
       # parent
-      puts "DEBUG: CHILD pid = $pid"
+      puts "DEBUG: CHILD pid = $pid , PPID = [pid]"  ;# PGID
+      if {$::pstdout ne ""} {close $::pstdout}
+      if {$::pstderr ne ""} {close $::pstderr}
+      # TODO: stdin
       dict set ::lut pid:$pid $setting
     }
   }
@@ -168,6 +218,9 @@ set program_queue [lsort -index 1 -integer -decr $program_queue]
 foreach program $program_queue {
   lassign $program program priority
   puts "DEBUG: $program"
+  if ![dict get $program start] {
+    continue
+  }
   fork_program $program
 }
 
