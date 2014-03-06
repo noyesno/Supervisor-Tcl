@@ -16,19 +16,24 @@ proc redirect_stdio {args} {
   foreach {mode file} $args {
     switch -exact $mode {
       "|"     {
-        dup $::pstdout stdout ;
-        close $::pstdout ; close $::istdout ;
+        dup   [dict get $::pstdout output] stdout
+        close [dict get $::pstdout output]
+        close [dict get $::pstdout input]
         break
       }
       "2|"    {
-        dup $::pstderr stderr ;
-        close $::pstderr ; close $::istderr ;
+        dup   [dict get $::pstderr output] stderr
+        close [dict get $::pstderr output]
+        close [dict get $::pstderr input]
         break
       }
       "|&"    {
-        dup $::pstdout stdout ; dup $::pstderr stderr ;
-        close $::pstdout ; close $::pstderr ;
-        close $::istdout ; close $::istderr ;
+        dup   [dict get $::pstdout output] stdout
+        dup   [dict get $::pstderr output] stderr
+        close [dict get $::pstdout output]
+        close [dict get $::pstdout input]
+        close [dict get $::pstderr output]
+        close [dict get $::pstderr input]
         break
       }
       ">"     { dup [open $file "w"] stdout }
@@ -45,7 +50,7 @@ proc redirect_stdio {args} {
   }
 }
 
-proc GetData {chan} {
+proc read_pipe {chan} {
     set data [read $chan]
     puts -nonewline "[string length $data] $data"
     if {[eof $chan]} {
@@ -55,7 +60,6 @@ proc GetData {chan} {
 
 proc pipe_stdio {args} {
   set ::pstdout "" ; set ::pstderr ""
-  set ::istdout "" ; set ::istderr ""
 
   # TODO
   set stdout "" ; set stderr ""
@@ -71,16 +75,24 @@ proc pipe_stdio {args} {
   }
 
   if {$stdout ne ""} {
-    pipe ::istdout ::pstdout
+    pipe input output
+    set ::pstdout [dict create input $input output $output]
+
+    if {$stderr eq "stdout"} {
+      set ::pstderr [dict create input [dup $input] output [dup $output]]
+    }
+
+    fconfigure $input -blocking 0 ;# -encoding binary
+    fileevent  $input readable [list read_pipe $input]
   }
-  if {$stderr eq "stdout"} {
-    dup $::pstdout ::pstderr
-    dup $::istdout ::istderr
-  } elseif {$stderr ne ""} {
-    pipe ::istderr ::pstderr
+
+  # TODO: check same file as stdout
+  if {$stderr ne "" && $stderr ne "stdout"} {
+    pipe input output
+    set ::pstderr [dict create input $input output $output]
+    fconfigure $input -blocking 0 ;# -encoding binary
+    fileevent  $input readable [list read_pipe $input]
   }
-  fconfigure $::istdout -blocking 0 ;# -encoding binary
-  fileevent  $::istdout readable [list GetData $::istdout]
 }
 
 
@@ -145,8 +157,12 @@ proc fork_child {setting {index 0}} {
     default {
       # parent
       puts "DEBUG: CHILD pid = $pid , PPID = [pid]"  ;# PGID
-      if {$::pstdout ne ""} {close $::pstdout}
-      if {$::pstderr ne ""} {close $::pstderr}
+      if {$::pstdout ne ""} {
+        close [dict get $::pstdout output]
+      }
+      if {$::pstderr ne ""} {
+        close [dict get $::pstderr output]
+      }
       # TODO: stdin
       dict set ::lut pid:$pid $setting
     }
@@ -225,7 +241,9 @@ foreach program $program_queue {
 }
 
 wait_child
-
+puts [string repeat "-" 72]
+system pstree -a [pid]
+puts [string repeat "-" 72]
 vwait forever
 
 exit
