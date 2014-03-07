@@ -5,7 +5,8 @@ package require Tclx
 package require tcllib
 package require inifile
 
-set lut [dict create]
+set lut    [dict create]
+set config [dict create]
 
 proc redirect_stdio {args} {
   # > 2> >& >> 2>> >>& 2>@1
@@ -13,40 +14,35 @@ proc redirect_stdio {args} {
   # TODO: use [join $args] to handle either 1 single arg or many args
 
   # TODO: not work { close stdout  ; open $file w }
+  set stdout "" ; set stderr ""
   foreach {mode file} $args {
     switch -exact $mode {
-      "|"     {
-        dup   [dict get $::pstdout output] stdout
-        close [dict get $::pstdout output]
-        close [dict get $::pstdout input]
-        break
-      }
-      "2|"    {
-        dup   [dict get $::pstderr output] stderr
-        close [dict get $::pstderr output]
-        close [dict get $::pstderr input]
-        break
-      }
+      "|"     { set stdout [dict get $::pstdout output] }
+      "|2"    { set stderr [dict get $::pstderr output] }
       "|&"    {
-        dup   [dict get $::pstdout output] stdout
-        dup   [dict get $::pstderr output] stderr
-        close [dict get $::pstdout output]
-        close [dict get $::pstdout input]
-        close [dict get $::pstderr output]
-        close [dict get $::pstderr input]
-        break
+        set stdout [dict get $::pstdout output]
+        set stderr [dict get $::pstderr output]
       }
-      ">"     { dup [open $file "w"] stdout }
-      "2>"    { dup [open $file "w"] stderr }
-      ">&"    { dup [open $file "w"] stdout ; dup stdout stderr }
-      ">>"    { dup [open $file "a"] stdout }
-      "2>>"   { dup [open $file "a"] stderr }
-      ">>&"   { dup [open $file "a"] stdout ; dup stdout stderr }
-      "2>@1"  { dup stdout stderr }
+      ">"     { set stdout [open $file "w"] }
+      "2>"    { set stderr [open $file "w"] }
+      ">&"    { set stdout [open $file "w"] ; set stderr stdout }
+      ">>"    { set stdout [open $file "a"] }
+      "2>>"   { set stderr [open $file "a"] }
+      ">>&"   { set stdout [open $file "a"] ; set stderr stdout }
+      "2>@1"  { set stderr stdout }
       default {
         # Error
       }
     }
+  }
+  # TODO: check stderr same destination file as stdout
+  if {$stdout ne ""} { dup $stdout stdout }
+  if {$stderr ne ""} { dup $stderr stderr }
+  if {$::pstdout ne ""} {
+    close [dict get $::pstdout output] ; close [dict get $::pstdout input]
+  }
+  if {$::pstderr ne ""} {
+    close [dict get $::pstderr output] ; close [dict get $::pstderr input]
   }
 }
 
@@ -66,7 +62,7 @@ proc pipe_stdio {args} {
   foreach {mode file} $args {
     switch -exact $mode {
       "|"     { set stdout $file }
-      "2|"    { set stderr $file }
+      "|2"    { set stderr $file }
       "|&"    { set stdout $file ; set stderr stdout }
       default {
         # Error
@@ -200,9 +196,11 @@ proc wait_child {} {
   after 1000 wait_child
 }
 
-proc load_ini {{file "supervisor.ini"}} {
+proc load_config {{file "supervisor.ini"}} {
   set ini [ini::open $file]
   foreach section [ini::sections $ini] {
+    dict set ::config $section [ini::get $ini $section]
+
     if [string match "program:*" $section] {
       dict set ::lut $section [ini::get $ini $section]
       dict set ::lut $section program [lindex [split $section :] 1]
@@ -219,9 +217,37 @@ set program.default {
   stdio    ""
 }
 
+proc daemon {{nochdir 1} {noclose 1}} {
+  set pid [fork]
+  if {$pid == -1} {
+    # fork fail
+    return
+  }
+  if {$pid>0} {
+    # parent
+    puts "daemon pid = $pid"
+    exit
+  }
+  # child
+
+  close stdin ;
+  open /dev/null "RDWR"
+  dup stdin stdout
+  dup stdin stderr
+
+}
+
 #======================================================
 
-load_ini
+load_config
+
+if [dict get $config supervisor daemon] {
+  daemon
+}
+
+close stdout
+open supervisor.log w
+fconfigure stdout -buffering line
 
 set program_queue [list]
 foreach section [dict keys $lut program:*] {
@@ -230,7 +256,6 @@ foreach section [dict keys $lut program:*] {
 }
 
 set program_queue [lsort -index 1 -integer -decr $program_queue]
-
 foreach program $program_queue {
   lassign $program program priority
   puts "DEBUG: $program"
@@ -240,12 +265,12 @@ foreach program $program_queue {
   fork_program $program
 }
 
-wait_child
 puts [string repeat "-" 72]
 system pstree -a [pid]
 puts [string repeat "-" 72]
-vwait forever
 
+wait_child
+vwait forever
 exit
 
 #======================================================#
