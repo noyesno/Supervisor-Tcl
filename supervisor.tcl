@@ -234,7 +234,22 @@ proc daemon {{nochdir 1} {noclose 1}} {
   open /dev/null "RDWR"
   dup stdin stdout
   dup stdin stderr
+}
 
+proc on_signal {signame} {
+  switch $signame {
+    SIGTERM { # 15
+      puts "DEBUG: sig = $signame BEGIN"
+      # TODO
+      kill -pgroup SIGTERM 0
+      after 2000
+      kill -pgroup SIGKILL 0
+      puts "DEBUG: sig = $signame END"
+    }
+    default {
+      puts "DEBUG: sig = $signame"
+    }
+  }
 }
 
 #======================================================
@@ -244,6 +259,8 @@ load_config
 if [dict get $config supervisor daemon] {
   daemon
 }
+
+signal trap {TERM} "on_signal %S"
 
 close stdout
 open supervisor.log w
